@@ -1,0 +1,576 @@
+<html>
+	<head>
+		<title>Cloth</title>
+
+		<style>
+			body { margin: 0; overflow: hidden}
+			html {
+				background: black;
+			}
+			canvas {
+				border: 0px solid black;
+				display: inline-block;
+				margin: 0;
+				background: black;
+			}
+		</style>
+	</head>
+	<body>
+		
+
+		<canvas id="canvas"></canvas>
+
+		<script src="javascripts/jquery.js"></script>
+		<script src="javascripts/vector.js"></script>
+		<script src="javascripts/helper.js"></script>
+		<script src="javascripts/gui/dat.gui.min.js"></script>
+		<script src="javascripts/stats/stats.min.js"></script>
+		<script>
+			// Setup GUI
+			const gui = new dat.GUI();
+
+			// Setup game canvas
+			var canvas = document.getElementById("canvas");
+			var ctx = canvas.getContext("2d");
+
+			canvas.width = window.innerWidth;
+			canvas.height = window.innerHeight;
+
+			class Node {
+				constructor(pos) {
+					this.pos = new Vector(pos.x, pos.y);
+					this.prevPos = this.pos.copy();
+
+					this.pinned = false;
+				}
+
+				update() {
+					if (this.pinned) return;
+
+					let old = this.pos.copy();
+
+					let gravity = new Vector(0, settings.gravity);
+					this.pos.add(Vector.add(Vector.mult(Vector.sub(this.pos, this.prevPos), 1-settings.damping), Vector.mult(gravity, dt*dt*100)))
+
+					this.prevPos = old;
+				}
+
+				draw() {
+					if (this.pinned)
+						drawCircle(this.pos.x, this.pos.y, 5, 1, this.pinned ? "red" : "white")
+				}
+			}
+
+			class Link {
+				constructor(a, b, d) {
+					this.node1 = a;
+					this.node2 = b;
+
+					/*if (d) {
+						this.disabled = true;
+					}*/
+				}
+
+				update() {
+					let {node1, node2} = this;
+
+					this.checkCollision();
+
+					if (this.disabled) return;
+
+					let diff = Vector.sub(node1.pos, node2.pos);
+					let dist = Vector.dist(node1.pos, node2.pos);
+					let difference = 0;
+					if (dist > 0) {
+						difference = (settings.linkDistance - dist) / dist;
+					}
+
+					diff.mult(0.5 * difference * (1-settings.elasticity))
+
+					let translate = diff.copy();
+
+					node1.pos.add(translate);
+					node2.pos.sub(translate);
+				}
+
+				checkCollision() {
+					let {node1, node2} = this;
+
+					if (node1.pos.y > canvas.height) {
+						node1.pos.y = canvas.height;
+						node1.prevPos.x += (node1.pos.x-node1.prevPos.x)/2000; // Ground friction
+					}
+					if (node1.pos.y < 0) {
+						node1.pos.y = 0;
+					}
+					if (node1.pos.x > canvas.width) {
+						node1.pos.x = canvas.width;
+					}
+					if (node1.pos.x < 0) {
+						node1.pos.x = 0;
+					}
+				}
+			}
+
+			class Cloth {
+				constructor() {
+
+					this.nodes = [];
+					this.links = [];
+
+					this.init();
+				}
+
+				init() {
+					console.clear();
+					this.nodes = [];
+					this.links = [];
+
+					let {totalNodes, nodes, links, nodeDistance} = this;
+
+					let next = 0;
+
+					// Add nodes
+					for (let i = 0; i < settings.clothSize*settings.clothSize; i++) {
+
+						let x = i%settings.clothSize;
+						let y = Math.floor(i/settings.clothSize);
+
+						let pos = new Vector(canvas.width/2 + (x-settings.clothSize/2)*(settings.linkDistance), canvas.height/8 + (y)*settings.linkDistance);
+						nodes[i] = new Node(pos);
+
+
+						// Pin the top nodes of the cloth
+						if (y == 0 && (x == 0 || (x == Math.round(next)))) {
+							next += (settings.clothSize-1)/(settings.pinnedNodes-1);
+							nodes[i].pinned = true;
+							nodes[i].pinnedPos = pos.copy();
+						}
+
+						
+					}
+
+					// Add links
+					for (let i = 0; i < settings.clothSize*settings.clothSize; i++) {
+						let x = i%settings.clothSize;
+						let y = Math.floor(i/settings.clothSize);
+
+						// Add the links
+						if (x != 0) {
+							let link = new Link(nodes[i], nodes[i-1]);
+							links.push(link);
+						}
+
+						if (y != 0) {
+							let index = ((y - 1) * (settings.clothSize) + x)
+							let link = new Link(nodes[i], nodes[index]);
+							links.push(link);
+						}
+
+						/*let diagLinkDistance = Math.sqrt(2*settings.linkDistance*settings.linkDistance)
+
+						if (y != 0 && x != settings.clothSize-1) {
+							let index = ((y - 1) * (settings.clothSize) + x)+1
+							let diagonal_link = new Link(nodes[i], nodes[index], true);
+							links.push(diagonal_link);
+						}
+
+						if (y != 0 && x != 0) {
+							let index = ((y - 1) * (settings.clothSize) + x)-1
+							let diagonal_link = new Link(nodes[i], nodes[index], true);
+							links.push(diagonal_link);
+						}*/
+					}
+
+				}
+
+				update() {
+					this.simulate();
+
+					for (let i = 0; i < settings.iterations; i++) {
+						this.applyConstraints();
+					}
+
+					this.checkLinkCollision();
+					if (settings.tear) this.checkLinkTear();
+				}
+
+				simulate() {
+					for (let node of this.nodes) {
+						node.update();
+					}
+				}
+
+				applyConstraints() {
+					for (let link of this.links) {
+						link.update();
+					}
+
+					for (let node of this.nodes) {
+						if (node.pinned) {
+							node.pos = node.pinnedPos.copy();
+						}
+					}
+				}
+
+				checkLinkCollision() {
+					if (!mouse.right) return;
+
+
+					if (mouse.pos.x == prevMousePos.x && mouse.pos.y == prevMousePos.y) return;
+
+					for (var i = this.links.length - 1; i >= 0; i--) {
+						let link = this.links[i];
+
+						let line = {
+							p1: link.node1.pos.copy(),
+							p2: link.node2.pos.copy()
+						}
+
+						// Check if the line is cut
+						let cut = false;
+						for (let line1 of knives) {
+							if (intersects(line.p1.x, line.p1.y, line.p2.x, line.p2.y, line1.p1.x, line1.p1.y, line1.p2.x, line1.p2.y)) {
+								this.links.splice(i, 1);
+								cut = true;
+								break;
+							}
+						}
+					}
+				}
+
+				checkLinkTear() {
+					for (var i = this.links.length - 1; i >= 0; i--) {
+						let link = this.links[i];
+
+						// Check if the line is torn
+						let dist = Vector.dist(link.node1.pos, link.node2.pos);
+						if (dist > settings.tearThreshold) this.links.splice(i, 1);
+					}
+				}
+
+				draw() {
+
+					if (settings.drawStretch) {
+						// Draw stretch severity
+						for (let link of this.links) {
+							let node1 = link.node1;
+							let node2 = link.node2;
+
+							let dist = Vector.dist(node1.pos, node2.pos);
+
+							let maxDist = 5;
+							let percent = clamp(dist - settings.linkDistance, 0, maxDist);
+							percent = scale(percent, 0, maxDist, 0, 1);
+							let color = getGradientColor("#FFFFFF", "#FF0000", percent)
+
+							drawLine(node1.pos.x, node1.pos.y, node2.pos.x, node2.pos.y, 1, color, 1, "round")
+						}
+					} else {
+						// Draw default cloth
+						ctx.beginPath();
+						ctx.lineWidth = 1;
+						ctx.strokeStyle = "white";
+						ctx.globalAlpha = 1;
+						ctx.lineCap = "round";
+						
+						for (let link of this.links) {
+							let node1 = link.node1;
+							let node2 = link.node2;
+
+							ctx.moveTo(node1.pos.x, node1.pos.y);
+							ctx.lineTo(node2.pos.x, node2.pos.y);
+						}
+
+						ctx.stroke();
+
+						ctx.closePath();
+					}
+						
+
+					for (let node of this.nodes) {
+						node.draw();
+					}
+				}
+			}
+
+			function drawKnives() {
+				for (let knife of knives) {
+					drawLine(knife.p1.x, knife.p1.y, knife.p2.x, knife.p2.y, 3, "green", 1, "round")
+				}
+			}
+
+			let selectedNodes = [];
+			let selectedNode = undefined;
+			function selectNodes() {
+				if (!selectedNodes.length) {
+					for (let node of cloth.nodes) {
+						let d = Vector.dist(node.pos, mouse.pos);
+						if (d < settings.grabbingRadius) {
+							selectedNodes.push(node);
+						}
+					}
+				}
+			}
+
+			function selectNode() {
+				if (!selectedNode) {
+					let closest = undefined;
+					let closestDistance = Infinity;
+
+					for (let node of cloth.nodes) {
+						let d = Vector.dist(node.pos, mouse.pos);
+						if (d < 5 && d < closestDistance) {
+							closestDistance = d;
+							closest = node;
+						}
+					}
+
+					if (closest) {
+						pinNode(closest);
+					}
+				}
+			}
+
+			function pinNode(node) {
+				node.pinned = !node.pinned;
+				if (node.pinned) {
+					node.pinnedPos = mouse.pos.copy();
+				}
+			}
+
+			// Add GUI settings
+			let default_settings = {
+				iterations: 10,
+				linkDistance: 10,
+				damping: 0.02,
+				elasticity: 0.1,
+				tear: false,
+				tearThreshold: 100,
+				drawStretch: false,
+				clothSize: 50,
+				pinnedNodes: 5,
+				grabbingRadius: 40,
+				gravity: 9.81
+			}
+
+			let settings = Object.assign({}, default_settings);
+
+			function resetSettings() {
+				settings = Object.assign(settings, default_settings)
+				gui.updateDisplay()
+			}
+
+			// Cloth controls
+			const clothFolder = gui.addFolder('Cloth');
+			clothFolder.open();
+			clothFolder.add(settings, 'iterations', 1, 100)
+			clothFolder.add(settings, 'linkDistance', 1, 20, 0.5)
+			clothFolder.add(settings, 'damping', 0, 0.1, 0.005)
+			clothFolder.add(settings, 'elasticity', 0, 1)
+
+			const tearFolder = gui.addFolder('Tearing');
+			tearFolder.add(settings, 'tear')
+			tearFolder.add(settings, 'tearThreshold', 5, 200)
+			tearFolder.add(settings, 'drawStretch')
+
+
+			// Setup controls
+			const setupFolder = gui.addFolder('Setup');
+			setupFolder.open();
+			setupFolder.add(settings, 'clothSize', 1, 100, 1)
+			setupFolder.add(settings, 'pinnedNodes', 1, 20, 1)
+
+			// Miscellaneous controls
+			const miscFolder = gui.addFolder('Miscellaneous');
+			miscFolder.open();
+			miscFolder.add(settings, 'grabbingRadius', 5, 100, 5)
+			miscFolder.add(settings, 'gravity', 0, 100, 0.01)
+
+			// Reset cloth button
+			var reset = { 'Reset Cloth' :function(){ cloth.init() }};
+			gui.add(reset,'Reset Cloth');
+
+			// Reset settings button
+			var reset = { 'Reset Settings' :function(){ resetSettings(); }};
+			gui.add(reset,'Reset Settings');
+
+			// Init cloth
+			let cloth = new Cloth();
+			
+			function update() {
+				cloth.update();
+
+				if (!mouse.right) knives.shift();
+
+				for (let node of selectedNodes) {
+					node.pos = mouse.pos.copy();
+					node.prevPos = mouse.pos.copy();
+
+					if (node.pinned) {
+						node.pinnedPos = mouse.pos.copy();
+					}
+				}
+			}
+
+			function draw() {
+				ctx.clearRect(0, 0, canvas.width, canvas.height)
+				cloth.draw();
+
+				drawText("Left click to grab the cloth | Middle click to pin/unpin a node | Right click to cut the cloth", canvas.width/2, canvas.height-20, "20px Arial", "white", "center", "bottom")
+
+				drawKnives();
+			}
+
+			// Stats panel
+			var stats = new Stats();
+			stats.showPanel( 0 ); // 0: fps, 1: ms, 2: mb, 3+: custom
+			document.body.appendChild( stats.dom );
+
+			// Update loop
+			var dt = 16/1000;
+			setInterval(function () {
+				stats.begin();
+				update();
+				draw();
+				stats.end();
+			}, dt*1000)
+
+			// Check if two line segments are intersecting
+			function intersects(a,b,c,d,p,q,r,s) {
+			  var det, gamma, lambda;
+			  det = (c - a) * (s - q) - (r - p) * (d - b);
+			  if (det === 0) {
+			    return false;
+			  } else {
+			    lambda = ((s - q) * (r - a) + (p - r) * (s - b)) / det;
+			    gamma = ((b - d) * (r - a) + (c - a) * (s - b)) / det;
+			    return (0 < lambda && lambda < 1) && (0 < gamma && gamma < 1);
+			  }
+			};
+
+			function scale (number, inMin, inMax, outMin, outMax) {
+			    return (number - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
+			}
+
+			function clamp(num, min, max) {
+			  return num <= min 
+			    ? min 
+			    : num >= max 
+			      ? max 
+			      : num
+			}
+
+			function getGradientColor(start_color, end_color, percent) {
+			   // strip the leading # if it's there
+			   start_color = start_color.replace(/^\s*#|\s*$/g, '');
+			   end_color = end_color.replace(/^\s*#|\s*$/g, '');
+
+			   // convert 3 char codes --> 6, e.g. `E0F` --> `EE00FF`
+			   if(start_color.length == 3){
+			     start_color = start_color.replace(/(.)/g, '$1$1');
+			   }
+
+			   if(end_color.length == 3){
+			     end_color = end_color.replace(/(.)/g, '$1$1');
+			   }
+
+			   // get colors
+			   var start_red = parseInt(start_color.substr(0, 2), 16),
+			       start_green = parseInt(start_color.substr(2, 2), 16),
+			       start_blue = parseInt(start_color.substr(4, 2), 16);
+
+			   var end_red = parseInt(end_color.substr(0, 2), 16),
+			       end_green = parseInt(end_color.substr(2, 2), 16),
+			       end_blue = parseInt(end_color.substr(4, 2), 16);
+
+			   // calculate new color
+			   var diff_red = end_red - start_red;
+			   var diff_green = end_green - start_green;
+			   var diff_blue = end_blue - start_blue;
+
+			   diff_red = ( (diff_red * percent) + start_red ).toString(16).split('.')[0];
+			   diff_green = ( (diff_green * percent) + start_green ).toString(16).split('.')[0];
+			   diff_blue = ( (diff_blue * percent) + start_blue ).toString(16).split('.')[0];
+
+			   // ensure 2 digits by color
+			   if( diff_red.length == 1 ) diff_red = '0' + diff_red
+			   if( diff_green.length == 1 ) diff_green = '0' + diff_green
+			   if( diff_blue.length == 1 ) diff_blue = '0' + diff_blue
+
+			   return '#' + diff_red + diff_green + diff_blue;
+			};
+
+		    var map = {};
+			onkeydown = onkeyup = function(e){
+			    e = e || event; 
+			    map[e.keyCode] = e.type == 'keydown';
+			}
+
+			let knives = [];
+
+			var prevMousePos = new Vector();
+			var mouse = {pos: new Vector()};
+
+			$("canvas").on("mousemove", function (e) {
+
+				let old = mouse.pos.copy();
+				mouse.pos = new Vector(e.offsetX, e.offsetY)
+				prevMousePos = old;
+
+				if (!mouse.right) return;
+				knives.push({
+					p1: mouse.pos.copy(),
+					p2: prevMousePos.copy()
+				})
+
+				setTimeout(function () {
+					knives.shift()
+				}, 50);
+			})
+
+			$("canvas").on('mousedown', function (e) {
+				if (e.which == 1) {
+					mouse.left = true;
+
+					selectNodes();
+				} else if (e.which == 2) {
+					mouse.middle = true;
+
+					selectNode();
+				} else if (e.which == 3) {
+					mouse.right = true;
+				}
+				e.preventDefault();
+			}).on('mouseup', function (e) {
+				selectedNodes = [];
+				selectedNode = undefined;
+				if (e.which == 1) {
+					mouse.left = false;
+				} else if (e.which == 2) {
+					mouse.middle = false;
+				} else if (e.which == 3) {
+					mouse.right = false;
+				}
+				e.preventDefault();
+			})
+
+			$("canvas").on('mousedown', function () {}).mouseleave(function () {
+			    mouse.left = false;
+			    mouse.middle = false;
+			    mouse.right = false;
+			    selectedNode = undefined;
+			    selectedNodes = [];
+			});
+
+			window.oncontextmenu = function () {
+				return false;
+			}
+
+			$(window).resize(function () {
+				canvas.width = window.innerWidth;
+				canvas.height = window.innerHeight;
+			})
+		</script>
+	</body>
+</html>
