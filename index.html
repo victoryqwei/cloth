@@ -25,6 +25,7 @@
 		<script src="javascripts/helper.js"></script>
 		<script src="javascripts/gui/dat.gui.min.js"></script>
 		<script src="javascripts/stats/stats.min.js"></script>
+		<script src="javascripts/index.js"></script>
 		<script>
 			// Setup GUI
 			const gui = new dat.GUI();
@@ -37,22 +38,57 @@
 			canvas.height = window.innerHeight;
 
 			class Node {
-				constructor(pos) {
-					this.pos = new Vector(pos.x, pos.y);
-					this.prevPos = this.pos.copy();
+				constructor(x, y) {
+					this.pos = new Vector();
+					this.prevPos = new Vector();
+
+					this.origX = x;
+					this.origY = y;
 
 					this.pinned = false;
 				}
 
+				setPos(pos) {
+					this.pos = new Vector(pos.x, pos.y);
+					this.prevPos = this.pos.copy();
+				}
+
 				update() {
+					// Wind
+					let time = (Date.now()/1000)*2*Math.PI/settings.windTime;
+
+					let windAngle = settings.windAngle/180*Math.PI
+
+					var wind = this.pos.copy();
+
+					wind.x = ((Math.sin(wind.y/settings.windSpacing + time)+1)/2 * (settings.maxWindForce-settings.minWindForce) + settings.minWindForce)
+					wind.x *= Math.cos(windAngle);
+
+					wind.y = ((Math.sin(wind.x/settings.windSpacing + time)+1)/2 * (settings.maxWindForce-settings.minWindForce) + settings.minWindForce)
+					wind.y *= Math.sin(windAngle);
+
+					//if (this.origX == 0) drawLine(this.pos.x, this.pos.y, this.pos.x + wind.x, this.pos.y + wind.y, 5, "lime")
+
 					if (this.pinned) return;
 
 					let old = this.pos.copy();
 
+
+					// Gravity
 					let gravity = new Vector(0, settings.gravity);
-					this.pos.add(Vector.add(Vector.mult(Vector.sub(this.pos, this.prevPos), 1-settings.damping), Vector.mult(gravity, dt*dt*100)))
+
+					let netForce = new Vector();
+					netForce.add(gravity);
+
+					if (settings.wind) netForce.add(wind);
+
+					this.applyForce(netForce);
 
 					this.prevPos = old;
+				}
+
+				applyForce(force) {
+					this.pos.add(Vector.add(Vector.mult(Vector.sub(this.pos, this.prevPos), 1-settings.damping), Vector.mult(force, dt*dt*100)))
 				}
 
 				draw() {
@@ -136,18 +172,45 @@
 						let x = i%settings.clothSize;
 						let y = Math.floor(i/settings.clothSize);
 
+						
 						let pos = new Vector(canvas.width/2 + (x-settings.clothSize/2)*(settings.linkDistance), canvas.height/8 + (y)*settings.linkDistance);
-						nodes[i] = new Node(pos);
-
+						nodes[i] = new Node(x, y);
+						nodes[i].setPos(pos); 
 
 						// Pin the top nodes of the cloth
-						if (y == 0 && (x == 0 || (x == Math.round(next)))) {
-							next += (settings.clothSize-1)/(settings.pinnedNodes-1);
-							nodes[i].pinned = true;
-							nodes[i].pinnedPos = pos.copy();
+						if (settings.preset == 'default') {
+
+							nodes[i].setPos(pos); 
+
+							if (y == 0 && (x == 0 || (x == Math.round(next)))) {
+								next += (settings.clothSize-1)/(settings.pinnedNodes-1);
+								nodes[i].pinned = true;
+								nodes[i].pinnedPos = pos.copy();
+							}
+
+						} else if (settings.preset == 'flag') {
+
+							pos = new Vector(canvas.width/3 + (x-settings.clothSize/2)*(settings.linkDistance), canvas.height/8 + (y)*settings.linkDistance);
+							nodes[i].setPos(pos);
+
+							if (x == 0 && (y == 0 || (y == Math.round(next)))) {
+								next += (settings.clothSize-1)/(settings.pinnedNodes-1);
+								nodes[i].pinned = true;
+								nodes[i].pinnedPos = pos.copy();
+							}
+
+						} else if (settings.preset == 'box') {
+							nodes[i].setPos(pos); 
+
+
+							let left = (x == 0 || x == settings.clothSize-1) && (y == 0 || y == settings.clothSize-1);
+
+							if (left) {
+								nodes[i].pinned = true;
+								nodes[i].pinnedPos = pos.copy();
+							}
 						}
 
-						
 					}
 
 					// Add links
@@ -166,20 +229,6 @@
 							let link = new Link(nodes[i], nodes[index]);
 							links.push(link);
 						}
-
-						/*let diagLinkDistance = Math.sqrt(2*settings.linkDistance*settings.linkDistance)
-
-						if (y != 0 && x != settings.clothSize-1) {
-							let index = ((y - 1) * (settings.clothSize) + x)+1
-							let diagonal_link = new Link(nodes[i], nodes[index], true);
-							links.push(diagonal_link);
-						}
-
-						if (y != 0 && x != 0) {
-							let index = ((y - 1) * (settings.clothSize) + x)-1
-							let diagonal_link = new Link(nodes[i], nodes[index], true);
-							links.push(diagonal_link);
-						}*/
 					}
 
 				}
@@ -340,24 +389,60 @@
 			}
 
 			// Add GUI settings
-			let default_settings = {
-				iterations: 10,
-				linkDistance: 10,
-				damping: 0.02,
-				elasticity: 0.1,
-				tear: false,
-				tearThreshold: 100,
-				drawStretch: false,
-				clothSize: 50,
-				pinnedNodes: 5,
-				grabbingRadius: 40,
-				gravity: 9.81
+
+			let presets = {
+
+				'default': {
+					preset: 'default',
+					iterations: 10,
+					linkDistance: 10,
+					damping: 0.02,
+					elasticity: 0.1,
+					tear: false,
+					tearThreshold: 100,
+					drawStretch: false,
+					clothSize: 50,
+					pinnedNodes: 5,
+					grabbingRadius: 40,
+					gravity: 9.81,
+					wind: false,
+					minWindForce: 0,
+					maxWindForce: 60,
+					windTime: 0.8,
+					windSpacing: 30,
+					windAngle: 0,
+				},
+
+				'flag': {
+					preset: 'flag',
+					iterations: 10,
+					linkDistance: 10,
+					damping: 0.02,
+					elasticity: 0.1,
+					tear: false,
+					tearThreshold: 100,
+					drawStretch: false,
+					clothSize: 50,
+					pinnedNodes: 5,
+					grabbingRadius: 40,
+					gravity: 9.81,
+					wind: true,
+					minWindForce: 0,
+					maxWindForce: 60,
+					windTime: 0.8,
+					windSpacing: 30,
+					windAngle: 0,
+				},
+
+				'box': {
+					preset: 'box',
+				}
 			}
 
-			let settings = Object.assign({}, default_settings);
+			let settings = Object.assign({}, presets['default']);
 
 			function resetSettings() {
-				settings = Object.assign(settings, default_settings)
+				settings = Object.assign(settings, presets[settings.preset])
 				gui.updateDisplay()
 			}
 
@@ -374,12 +459,21 @@
 			tearFolder.add(settings, 'tearThreshold', 5, 200)
 			tearFolder.add(settings, 'drawStretch')
 
-
 			// Setup controls
 			const setupFolder = gui.addFolder('Setup');
 			setupFolder.open();
 			setupFolder.add(settings, 'clothSize', 1, 100, 1)
-			setupFolder.add(settings, 'pinnedNodes', 1, 20, 1)
+			setupFolder.add(settings, 'pinnedNodes', 1, 50, 1)
+
+			// Wind controls
+			const windFolder = gui.addFolder('Wind');
+			windFolder.open();
+			windFolder.add(settings, 'wind')
+			windFolder.add(settings, 'minWindForce', 0, 100, 1);
+			windFolder.add(settings, 'maxWindForce', 1, 100, 1);
+			windFolder.add(settings, 'windTime', 0.1, 2, 0.01);
+			windFolder.add(settings, 'windSpacing', 5, 100, 1);
+			windFolder.add(settings, 'windAngle', 0, 360, 5);
 
 			// Miscellaneous controls
 			const miscFolder = gui.addFolder('Miscellaneous');
@@ -394,6 +488,15 @@
 			// Reset settings button
 			var reset = { 'Reset Settings' :function(){ resetSettings(); }};
 			gui.add(reset,'Reset Settings');
+
+			// Preset dropdown
+			let presetController = gui.add(settings, 'preset', Object.keys(presets));
+			presetController.name("Presets")
+			presetController.onChange(function () {
+				settings = Object.assign(settings, presets[settings.preset])
+				cloth.init();
+				gui.updateDisplay();
+			})
 
 			// Init cloth
 			let cloth = new Cloth();
@@ -414,7 +517,6 @@
 			}
 
 			function draw() {
-				ctx.clearRect(0, 0, canvas.width, canvas.height)
 				cloth.draw();
 
 				drawText("Left click to grab the cloth | Middle click to pin/unpin a node | Right click to cut the cloth", canvas.width/2, canvas.height-20, "20px Arial", "white", "center", "bottom")
@@ -430,77 +532,15 @@
 			// Update loop
 			var dt = 16/1000;
 			setInterval(function () {
+
+				ctx.clearRect(0, 0, canvas.width, canvas.height)
 				stats.begin();
 				update();
 				draw();
 				stats.end();
 			}, dt*1000)
 
-			// Check if two line segments are intersecting
-			function intersects(a,b,c,d,p,q,r,s) {
-			  var det, gamma, lambda;
-			  det = (c - a) * (s - q) - (r - p) * (d - b);
-			  if (det === 0) {
-			    return false;
-			  } else {
-			    lambda = ((s - q) * (r - a) + (p - r) * (s - b)) / det;
-			    gamma = ((b - d) * (r - a) + (c - a) * (s - b)) / det;
-			    return (0 < lambda && lambda < 1) && (0 < gamma && gamma < 1);
-			  }
-			};
-
-			function scale (number, inMin, inMax, outMin, outMax) {
-			    return (number - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
-			}
-
-			function clamp(num, min, max) {
-			  return num <= min 
-			    ? min 
-			    : num >= max 
-			      ? max 
-			      : num
-			}
-
-			function getGradientColor(start_color, end_color, percent) {
-			   // strip the leading # if it's there
-			   start_color = start_color.replace(/^\s*#|\s*$/g, '');
-			   end_color = end_color.replace(/^\s*#|\s*$/g, '');
-
-			   // convert 3 char codes --> 6, e.g. `E0F` --> `EE00FF`
-			   if(start_color.length == 3){
-			     start_color = start_color.replace(/(.)/g, '$1$1');
-			   }
-
-			   if(end_color.length == 3){
-			     end_color = end_color.replace(/(.)/g, '$1$1');
-			   }
-
-			   // get colors
-			   var start_red = parseInt(start_color.substr(0, 2), 16),
-			       start_green = parseInt(start_color.substr(2, 2), 16),
-			       start_blue = parseInt(start_color.substr(4, 2), 16);
-
-			   var end_red = parseInt(end_color.substr(0, 2), 16),
-			       end_green = parseInt(end_color.substr(2, 2), 16),
-			       end_blue = parseInt(end_color.substr(4, 2), 16);
-
-			   // calculate new color
-			   var diff_red = end_red - start_red;
-			   var diff_green = end_green - start_green;
-			   var diff_blue = end_blue - start_blue;
-
-			   diff_red = ( (diff_red * percent) + start_red ).toString(16).split('.')[0];
-			   diff_green = ( (diff_green * percent) + start_green ).toString(16).split('.')[0];
-			   diff_blue = ( (diff_blue * percent) + start_blue ).toString(16).split('.')[0];
-
-			   // ensure 2 digits by color
-			   if( diff_red.length == 1 ) diff_red = '0' + diff_red
-			   if( diff_green.length == 1 ) diff_green = '0' + diff_green
-			   if( diff_blue.length == 1 ) diff_blue = '0' + diff_blue
-
-			   return '#' + diff_red + diff_green + diff_blue;
-			};
-
+			
 		    var map = {};
 			onkeydown = onkeyup = function(e){
 			    e = e || event; 
